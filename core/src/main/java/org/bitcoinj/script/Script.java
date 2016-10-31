@@ -59,7 +59,8 @@ public class Script {
         NO_TYPE,
         P2PKH,
         PUB_KEY,
-        P2SH
+        P2SH,
+        CKSM_CON
     }
 
     /** Flags to pass to {@link Script#correctlySpends(Transaction, long, Script, Set)}.
@@ -230,6 +231,27 @@ public class Script {
         return chunks.size() == 2 && chunks.get(1).equalsOpCode(OP_CHECKSIG) &&
                !chunks.get(0).isOpCode() && chunks.get(0).data.length > 1;
     }
+    
+    
+    /**
+     * 
+     * Returns true if this script is of the form:
+     * [OP_DUP() OP_HASH160() <pubkey> OP_EQUALVERIFY() OP_CHECKSIG() ...
+     *  ... OP_VERIFY() <checksum> OP_EQUAL()]
+     *
+     */
+    public boolean isSentToChecksumContract() {
+    	return chunks.size() == 8 &&
+                chunks.get(0).equalsOpCode(OP_DUP) &&
+                chunks.get(1).equalsOpCode(OP_HASH160) &&
+                chunks.get(2).data.length == Address.LENGTH &&
+                chunks.get(3).equalsOpCode(OP_EQUALVERIFY) &&
+                chunks.get(4).equalsOpCode(OP_CHECKSIG) &&
+                chunks.get(5).equalsOpCode(OP_VERIFY) &&
+                chunks.get(6).data.length == 32 &&//TODO
+                chunks.get(7).equalsOpCode(OP_EQUAL);
+    }
+    
 
     /**
      * Returns true if this script is of the form DUP HASH160 <pubkey hash> EQUALVERIFY CHECKSIG, ie, payment to an
@@ -271,6 +293,8 @@ public class Script {
             return chunks.get(2).data;
         else if (isPayToScriptHash())
             return chunks.get(1).data;
+        else if (isSentToChecksumContract())
+        	return chunks.get(2).data;
         else
             throw new ScriptException("Script not in the standard scriptPubKey form");
     }
@@ -364,6 +388,8 @@ public class Script {
             return Address.fromP2SHScript(params, this);
         else if (forcePayToPubKey && isSentToRawPubKey())
             return ECKey.fromPublicOnly(getPubKey()).toAddress(params);
+        else if (isSentToChecksumContract())
+        	return new Address(params, getPubKeyHash());
         else
             throw new ScriptException("Cannot cast this script to a pay-to-address type");
     }
@@ -452,6 +478,34 @@ public class Script {
         } else if (isPayToScriptHash()) {
             checkArgument(redeemScript != null, "Redeem script required to create P2SH input script");
             return ScriptBuilder.createP2SHMultiSigInputScript(null, redeemScript);
+        } else if (isSentToChecksumContract()) {
+        	throw new ScriptException("use overloaded createEmptyInputScript(@Nullable ECKey key, @Nullable Script redeemScript, @Nullable byte[] checksum)");
+        } else {
+            throw new ScriptException("Do not understand script type: " + this);
+        }
+    }
+    /**
+     * extending the functionality of createEmptyInputScript to accommodate checksum contract
+     * inputs. 
+     * 
+     * @param key
+     * @param redeemScript
+     * @param checksum
+     * @return
+     */
+    public Script createEmptyInputScript(@Nullable ECKey key, @Nullable Script redeemScript, @Nullable byte[] checksum) {
+        if (isSentToAddress()) {
+            checkArgument(key != null, "Key required to create pay-to-address input script");
+            return ScriptBuilder.createInputScript(null, key);
+        } else if (isSentToRawPubKey()) {
+            return ScriptBuilder.createInputScript(null);
+        } else if (isPayToScriptHash()) {
+            checkArgument(redeemScript != null, "Redeem script required to create P2SH input script");
+            return ScriptBuilder.createP2SHMultiSigInputScript(null, redeemScript);
+        } else if (isSentToChecksumContract()) {
+        	checkArgument(key != null, "Key required to create checksum contract input script");
+        	checkArgument(checksum != null, "Checksum required to create checksum contract input script");
+            return ScriptBuilder.createInputScript(null, key, checksum);
         } else {
             throw new ScriptException("Do not understand script type: " + this);
         }
@@ -470,6 +524,9 @@ public class Script {
             sigsPrefixCount = 1; // OP_0 <sig>*
         } else if (isSentToAddress()) {
             sigsSuffixCount = 1; // <sig> <pubkey>
+        } else if (isSentToChecksumContract()) {
+        	sigsPrefixCount = 1; //<checksum> <sig>* <pubkey>
+        	sigsSuffixCount = 1;
         }
         return ScriptBuilder.updateScriptWithSignature(scriptSig, sigBytes, index, sigsPrefixCount, sigsSuffixCount);
     }
@@ -633,7 +690,7 @@ public class Script {
             // for N of M CHECKMULTISIG script we will need N signatures to spend
             ScriptChunk nChunk = chunks.get(0);
             return Script.decodeFromOpN(nChunk.opcode);
-        } else if (isSentToAddress() || isSentToRawPubKey()) {
+        } else if (isSentToAddress() || isSentToRawPubKey() || isSentToChecksumContract()) {
             // pay-to-address and pay-to-pubkey require single sig
             return 1;
         } else if (isPayToScriptHash()) {
@@ -662,6 +719,11 @@ public class Script {
             // scriptSig: <sig> <pubkey>
             int uncompressedPubKeySize = 65;
             return SIG_SIZE + (pubKey != null ? pubKey.getPubKey().length : uncompressedPubKeySize);
+        } else if (isSentToChecksumContract()) {
+        	// scriptSig: <checksum> <sig> <pubkey>
+            int uncompressedPubKeySize = 65;
+            int checksum = 32; /*this is an assumption TODO*/
+            return checksum + SIG_SIZE + (pubKey != null ? pubKey.getPubKey().length : uncompressedPubKeySize);
         } else {
             throw new IllegalStateException("Unsupported script type");
         }
@@ -1655,6 +1717,8 @@ public class Script {
             type = ScriptType.PUB_KEY;
         } else if (isPayToScriptHash()) {
             type = ScriptType.P2SH;
+        } else if (isSentToChecksumContract()) {
+        	type = ScriptType.CKSM_CON;
         }
         return type;
     }

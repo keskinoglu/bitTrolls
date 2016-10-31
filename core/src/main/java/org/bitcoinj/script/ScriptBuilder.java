@@ -249,6 +249,16 @@ public class ScriptBuilder {
         byte[] sigBytes = signature != null ? signature.encodeToBitcoin() : new byte[]{};
         return new ScriptBuilder().data(sigBytes).data(pubkeyBytes).build();
     }
+    
+    /**
+     * Creates a scriptSig that can redeem a checksum contract output.
+     * If given signature is null, incomplete scriptSig will be created with OP_0 instead of signature
+     */
+    public static Script createInputScript(@Nullable TransactionSignature signature, ECKey pubKey, byte[] checksum) {
+        byte[] pubkeyBytes = pubKey.getPubKey();
+        byte[] sigBytes = signature != null ? signature.encodeToBitcoin() : new byte[]{};
+        return new ScriptBuilder().data(checksum).data(sigBytes).data(pubkeyBytes).build();
+    }
 
     /**
      * Creates a scriptSig that can redeem a pay-to-pubkey output.
